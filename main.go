@@ -9,20 +9,22 @@
 package main
 
 import (
-	"context"
-	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/iam-marlonjr/terminal-list/internal/config"
-	"github.com/iam-marlonjr/terminal-list/internal/document"
-	"github.com/iam-marlonjr/terminal-list/internal/llm"
 	"github.com/iam-marlonjr/terminal-list/internal/store"
 	"github.com/iam-marlonjr/terminal-list/internal/task"
 	"github.com/iam-marlonjr/terminal-list/internal/tui"
 )
+
+var supportedImportExts = map[string]bool{
+	".pdf": true, ".md": true, ".markdown": true, ".txt": true, ".text": true,
+}
 
 func main() {
 	file := config.TasksFile()
@@ -35,14 +37,10 @@ func main() {
 
 	switch args[0] {
 	case "import", "plan":
-		fs := flag.NewFlagSet("import", flag.ExitOnError)
-		replace := fs.Bool("replace", false, "replace entire tasks file (default: merge)")
-		_ = fs.Parse(args[1:])
-		rest := fs.Args()
-		if len(rest) < 1 {
-			fatal("usage: todo import [--replace] <file>")
+		if len(args) < 2 {
+			fatal("usage: todo import <file>")
 		}
-		runImport(rest[0], file, *replace)
+		runImport(args[1])
 	case "add":
 		if len(args) < 2 {
 			fatal("usage: todo add <task text>")
@@ -67,68 +65,57 @@ func runTUI(file string) {
 	}
 }
 
-func runImport(docPath, file string, replace bool) {
-	fmt.Printf("Reading %s …\n", docPath)
-	text, err := document.ExtractText(docPath)
+// runImport copies a document into the imports directory so it can be turned
+// into tasks later from the TUI import page (page 4).
+func runImport(docPath string) {
+	ext := strings.ToLower(filepath.Ext(docPath))
+	if !supportedImportExts[ext] {
+		fatal(fmt.Sprintf("unsupported file type %q (use .pdf, .md, or .txt)", ext))
+	}
+
+	info, err := os.Stat(docPath)
 	if err != nil {
 		fatal(err)
 	}
-	if strings.TrimSpace(text) == "" {
-		fatal("no text extracted — scanned PDFs may need OCR first")
+	if info.IsDir() {
+		fatal(fmt.Sprintf("%s is a directory, not a file", docPath))
 	}
 
-	client, err := llm.New()
-	if err != nil {
+	dir := config.ImportDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fatal(err)
 	}
 
-	fmt.Println("Generating projects and tasks …")
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	md, err := client.GenerateFromDocument(ctx, text, time.Now().Format("Monday, 2 January 2006"))
-	if err != nil {
-		fatal(err)
-	}
-	md = stripFences(md)
-
-	imported, err := store.ParseMarkdown([]byte(md))
-	if err != nil {
-		fatal(err)
-	}
-	normalizeImported(imported)
-
-	if replace {
-		if err := imported.Save(file); err != nil {
-			fatal(err)
-		}
-		fmt.Printf("Replaced %s with %d tasks across %d projects.\n", file, imported.Count(), len(imported.Projects))
-		return
+	name := filepath.Base(docPath)
+	dst := filepath.Join(dir, name)
+	if _, err := os.Stat(dst); err == nil {
+		name = time.Now().Format("20060102-150405-") + name
+		dst = filepath.Join(dir, name)
 	}
 
-	doc, err := store.Load(file)
-	if err != nil {
+	if err := copyFile(docPath, dst); err != nil {
 		fatal(err)
 	}
-	doc.Merge(imported)
-	if err := doc.Save(file); err != nil {
-		fatal(err)
-	}
-	fmt.Printf("Merged import into %s — %d projects, %d tasks total.\n", file, len(imported.Projects), doc.Count())
+
+	fmt.Printf("Staged %s. Open todo, go to page 4 (import) to create tasks.\n", name)
 }
 
-func normalizeImported(doc *store.Document) {
-	for _, p := range doc.Projects {
-		if p.Status == "" {
-			p.Status = store.StatusActive
-		}
-		if p.Source == "" {
-			p.Source = "import"
-		}
-		if p.Created.IsZero() {
-			p.Created = time.Now().UTC()
-		}
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
 	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func runAdd(text, file string) {
@@ -168,31 +155,23 @@ func runList(file string) {
 func printHelp() {
 	fmt.Print(`todo — terminal task board (projects + markdown)
 
-  todo                         open dashboard (1-4 switch pages)
-  todo import <file>           AI: create projects/tasks from PDF/md/txt
-  todo import --replace <file> overwrite tasks file
+  todo                         open board TUI (1-4 switch pages)
+  todo import <file>           stage a PDF/md/txt for import (page 4)
   todo plan <file>             alias for import
   todo add  <task text>        add to Inbox
   todo list                    print all tasks
   todo help                    show this message
 
+Importing:
+  todo import <file>  copies the file into the imports directory. Open the
+  TUI, go to page 4 (import), select the file, and create tasks from it.
+
 Environment:
   TODO_FILE           task file (default: ~/.config/terminal-list/tasks.md)
-  ANTHROPIC_API_KEY   required for import
+  ANTHROPIC_API_KEY   required to create tasks from an import
   ANTHROPIC_MODEL     optional model override
-  TODO_ALT_SCREEN=1   use alternate screen in TUI
+  TODO_ALT_SCREEN=0   disable alternate screen (on by default in a TTY)
 `)
-}
-
-func stripFences(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		if i := strings.IndexByte(s, '\n'); i != -1 {
-			s = s[i+1:]
-		}
-		s = strings.TrimSuffix(strings.TrimSpace(s), "```")
-	}
-	return strings.TrimSpace(s) + "\n"
 }
 
 func fatal(v any) {

@@ -7,7 +7,7 @@
 - [ ] Run `todo import path/to/plan.pdf` to generate projects from a document
 
 ## Project: HubSpot contact cleanup
-<!-- status:active source:manual created:2026-06-02 -->
+<!-- status:active source:manual color:00ffff created:2026-06-02 -->
 
 ### Backlog
 

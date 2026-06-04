@@ -25,8 +25,12 @@ func newProjectList(doc *store.Document, width, height int) list.Model {
 		items = append(items, projectItem{project: p})
 	}
 	delegate := list.NewDefaultDelegate()
+	delegate.Styles.SelectedTitle = selectedItemStyle
+	delegate.Styles.SelectedDesc = selectedItemStyle
+	delegate.Styles.NormalTitle = menuItemStyle
+	delegate.Styles.NormalDesc = mutedStyle
 	l := list.New(items, delegate, width, height)
-	l.Title = "Projects"
+	l.Title = "projects"
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(false)
 	l.Styles.Title = titleStyle

@@ -7,7 +7,7 @@ work, and optionally **import** tasks from a PDF or document with AI.
 ## Requirements
 
 - Go 1.22+
-- `ANTHROPIC_API_KEY` (only for `todo import`)
+- `ANTHROPIC_API_KEY` (only to create tasks from an import, on page 4)
 
 ## Setup
 
@@ -22,9 +22,8 @@ first save). Override with `TODO_FILE`.
 ## Usage
 
 ```sh
-./todo                         # dashboard (pages 1–4)
-./todo import plan.pdf         # AI: merge new projects from document
-./todo import --replace x.pdf  # replace entire tasks file
+./todo                         # board TUI (pages 1–4)
+./todo import plan.pdf         # stage a document for import (page 4)
 ./todo add "Email finance"
 ./todo list
 ```
@@ -33,16 +32,16 @@ first save). Override with `TODO_FILE`.
 
 | Key | Page |
 |-----|------|
-| `1` | Dashboard — open counts, next tasks |
+| `1` | Board — master/detail task browser (terminal.shop-style) |
 | `2` | Projects — pick a project |
-| `3` | Tasks — toggle, add, delete |
-| `4` | Import — document path hint |
+| `3` | Tasks — toggle, add, delete for one project |
+| `4` | Import — list staged files, select one to create tasks |
 
-On the Tasks page: `space` toggle, `a` add, `d` delete, `esc` back to projects,
+On the Board page: `↑/↓` select, `enter`/`space` toggle, `a` add, `d` delete,
 `q` quit and save.
 
-If the UI looks blank in an IDE terminal, run in iTerm/Terminal.app, or set
-`TODO_ALT_SCREEN=1` only when your terminal supports it.
+Alternate screen is on by default in a real TTY. Set `TODO_ALT_SCREEN=0` if the
+UI looks blank in an embedded terminal.
 
 ## Import from a document
 
@@ -51,18 +50,29 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ./todo import path/to/plan.pdf    # also .md, .txt
 ```
 
-The model creates one or more `## Project: …` sections with checkboxes. Import
-**merges** into your existing file by default; use `--replace` to overwrite.
+`todo import <file>` copies the file into the imports directory
+(`<task-dir>/imports/`). It does **not** call the AI. To create tasks:
 
-Scanned PDFs need OCR first (e.g. `ocrmypdf in.pdf out.pdf`).
+1. Open the TUI and press `4` for the Import page.
+2. Navigate the staged files with `↑/↓` and press `enter` on one.
+3. The AI generates projects/tasks (runs in the background, so the UI stays
+   responsive); review the preview and press `y` to merge or `n` to cancel.
+4. After a successful merge, the file is moved to the trash directory
+   (`<task-dir>/trash/`).
+
+The model creates one or more `## Project: …` sections with checkboxes, which
+merge into your existing file. Scanned PDFs need OCR first
+(e.g. `ocrmypdf in.pdf out.pdf`).
 
 ## File format
+
+Optional per-project TUI accent in metadata: `color:00ffff` (hex, no `#`).
 
 ```markdown
 # Tasks
 
 ## Project: HubSpot cleanup
-<!-- status:active source:import created:2026-06-02 -->
+<!-- status:active source:import color:00ffff created:2026-06-02 -->
 
 ### Backlog
 - [ ] Export contacts <!-- id:9f3a1c2b created:2026-06-01T14:00:00Z -->

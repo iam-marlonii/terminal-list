@@ -4,6 +4,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/mattn/go-isatty"
 )
 
 // TasksFile returns the markdown task database path.
@@ -23,7 +25,25 @@ func TasksFile() string {
 	return filepath.Join(base, "terminal-list", "tasks.md")
 }
 
+// ImportDir returns the directory where staged import files live.
+// It is a sibling of the tasks file, so TODO_FILE overrides are respected.
+func ImportDir() string {
+	return filepath.Join(filepath.Dir(TasksFile()), "imports")
+}
+
+// TrashDir returns the directory where consumed import files are moved.
+func TrashDir() string {
+	return filepath.Join(filepath.Dir(TasksFile()), "trash")
+}
+
 // UseAltScreen reports whether the TUI should use the alternate screen buffer.
+// Defaults to on for real TTYs unless TODO_ALT_SCREEN=0.
 func UseAltScreen() bool {
-	return os.Getenv("TODO_ALT_SCREEN") == "1"
+	switch os.Getenv("TODO_ALT_SCREEN") {
+	case "1":
+		return true
+	case "0":
+		return false
+	}
+	return isatty.IsTerminal(os.Stdout.Fd())
 }

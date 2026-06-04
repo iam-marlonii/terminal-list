@@ -32,8 +32,12 @@ func newTaskList(project *store.Project, width, height int) list.Model {
 		items = projectGroupsAsItems(project)
 	}
 	delegate := list.NewDefaultDelegate()
+	delegate.Styles.SelectedTitle = selectedItemStyle
+	delegate.Styles.SelectedDesc = selectedItemStyle
+	delegate.Styles.NormalTitle = menuItemStyle
+	delegate.Styles.NormalDesc = mutedStyle
 	l := list.New(items, delegate, width, height)
-	title := "Tasks"
+	title := "tasks"
 	if project != nil {
 		title = "Tasks — " + project.Name
 	}

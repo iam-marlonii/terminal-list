@@ -33,6 +33,7 @@ type Project struct {
 	Name    string
 	Status  ProjectStatus
 	Source  string
+	Color   string // optional hex accent for TUI (e.g. color:00ffff in metadata)
 	Created time.Time
 	Groups  []*Group
 }
@@ -195,6 +196,8 @@ func parseProjectMeta(p *Project, meta string) {
 			} else if ts, err := time.Parse(time.RFC3339, parts[1]); err == nil {
 				p.Created = ts
 			}
+		case "color":
+			p.Color = strings.TrimPrefix(parts[1], "#")
 		}
 	}
 }
@@ -281,6 +284,9 @@ func (d *Document) Save(path string) error {
 		meta := fmt.Sprintf("status:%s created:%s", p.Status, p.Created.UTC().Format("2006-01-02"))
 		if p.Source != "" {
 			meta += " source:" + p.Source
+		}
+		if p.Color != "" {
+			meta += " color:" + p.Color
 		}
 		fmt.Fprintf(&b, "<!-- %s -->\n\n", meta)
 
