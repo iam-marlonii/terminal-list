@@ -2,13 +2,13 @@
 package tui
 
 import (
-	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/iam-marlonjr/terminal-list/internal/config"
 	"github.com/iam-marlonjr/terminal-list/internal/store"
+	"github.com/iam-marlonjr/terminal-list/internal/task"
 )
 
 // Page is a top-level screen.
@@ -16,37 +16,73 @@ type Page int
 
 const (
 	PageBoard Page = iota
-	PageProjects
 	PageTasks
+	PageProjects
 	PageImport
-	PagePreview
 )
+
+// viewMode is the sub-state within a page: a list (dashboard) or a detail.
+type viewMode int
+
+const (
+	modeDashboard viewMode = iota
+	modeView               // detail view; for import this is the review screen
+)
+
+const pageSize = 10
+
+// taskRef pairs a task with its owning project for flat lists.
+type taskRef struct {
+	task    *task.Task
+	project *store.Project
+}
 
 // Model is the root Bubble Tea model.
 type Model struct {
 	doc      *store.Document
 	path     string
 	page     Page
+	mode     viewMode
 	layout   layoutState
 	status   string
 	quitting bool
 
-	// navigation context
-	selectedProject *store.Project
+	// board
+	boardSel  int
+	boardPage int
 
-	// sub-models
-	board       boardState
-	projectList list.Model
-	taskList    list.Model
-	addInput    textinput.Model
-	adding      bool
-	previewMD   string
+	// tasks
+	taskSel  int
+	taskPage int
 
-	// import page
+	// projects
+	projSel     int
+	projPage    int
+	projTaskSel int
+
+	// import
 	importFiles       []string
 	importSel         int
 	generating        bool
 	pendingImportFile string
+
+	// import review
+	reviewDoc     *store.Document
+	reviewProject *store.Project
+	reviewTaskSel int
+
+	// inline add (import review)
+	adding   bool
+	addInput textinput.Model
+
+	// field editor (tasks / projects view)
+	editing     bool
+	editKind    editKind
+	editFields  []editField
+	editIndex   int
+	editInput   textinput.Model
+	editTask    *task.Task
+	editProject *store.Project
 }
 
 // New constructs the app for the given document and path.
@@ -56,75 +92,52 @@ func New(doc *store.Document, path string) Model {
 		path: path,
 		page: PageBoard,
 	}
-	m.refreshBoardEntries()
-	m.projectList = newProjectList(doc, 24, 12)
-	m.taskList = newTaskList(nil, 24, 12)
 	m.refreshImports()
+
 	m.addInput = textinput.New()
 	m.addInput.Placeholder = "new task…"
 	m.addInput.CharLimit = 200
 	m.addInput.Width = 50
 	m.addInput.PromptStyle = inputPromptStyle
 	m.addInput.TextStyle = menuItemStyle
+
+	m.editInput = textinput.New()
+	m.editInput.CharLimit = 400
+	m.editInput.Width = 50
+	m.editInput.PromptStyle = inputPromptStyle
+	m.editInput.TextStyle = menuItemStyle
+
 	return m
 }
 
-func (m Model) Init() tea.Cmd {
-	return nil
-}
+func (m Model) Init() tea.Cmd { return nil }
+
+func textinputBlink() tea.Cmd { return textinput.Blink }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.recalcLayout(msg)
-		m.resizeLists()
-		if m.page == PageBoard {
-			m.syncBoardDetail()
-		}
 		return m, nil
 	case tea.KeyMsg:
 		if m.quitting {
 			return m, tea.Quit
 		}
-		if m.page == PagePreview {
-			return m.updatePreview(msg)
+		if m.editing {
+			return m.updateEdit(msg)
 		}
-		if m.adding && m.page != PageBoard {
-			return m.updateAdd(msg)
+		if m.adding {
+			return m.updateReviewAdd(msg)
 		}
 		return m.updateKey(msg)
 	case genDoneMsg:
-		imported, err := store.ParseMarkdown([]byte(msg.md))
-		if err != nil {
-			m.generating = false
-			m.status = "import error: " + err.Error()
-			return m, nil
-		}
-		normalizeImported(imported)
-		m.previewMD = msg.md
-		m.pendingImportFile = msg.file
-		m.generating = false
-		m.page = PagePreview
-		return m, nil
+		return m.onGenDone(msg)
 	case genErrMsg:
 		m.generating = false
 		m.status = "import error: " + msg.err.Error()
 		return m, nil
 	}
 	return m, nil
-}
-
-func (m *Model) resizeLists() {
-	h := m.layout.contentH
-	if h < 4 {
-		h = 4
-	}
-	w := m.layout.contentW
-	if w < 20 {
-		w = 20
-	}
-	m.projectList.SetSize(w, h)
-	m.taskList.SetSize(w, h)
 }
 
 func (m *Model) save() {
@@ -148,23 +161,21 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.save()
 				m.quitting = true
 				return m, tea.Quit
-			case '1':
+			case 'b', 'B':
 				m.page = PageBoard
-				m.refreshBoardEntries()
+				m.mode = modeDashboard
 				return m, nil
-			case '2':
-				m.page = PageProjects
-				m.projectList = newProjectList(m.doc, listWidth(m), listHeight(m))
-				return m, nil
-			case '3':
-				if m.selectedProject == nil && len(m.doc.Projects) > 0 {
-					m.selectedProject = m.doc.Projects[0]
-				}
+			case 't', 'T':
 				m.page = PageTasks
-				m.taskList = newTaskList(m.selectedProject, listWidth(m), listHeight(m))
+				m.mode = modeDashboard
 				return m, nil
-			case '4':
+			case 'p', 'P':
+				m.page = PageProjects
+				m.mode = modeDashboard
+				return m, nil
+			case 'i', 'I':
 				m.page = PageImport
+				m.mode = modeDashboard
 				m.refreshImports()
 				return m, nil
 			}
@@ -174,30 +185,14 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.page {
 	case PageBoard:
 		return m.updateBoard(msg)
-	case PageProjects:
-		return m.updateProjects(msg)
 	case PageTasks:
 		return m.updateTasks(msg)
+	case PageProjects:
+		return m.updateProjects(msg)
 	case PageImport:
 		return m.updateImport(msg)
 	}
 	return m, nil
-}
-
-func listWidth(m Model) int {
-	w := m.layout.contentW
-	if w < 20 {
-		return 20
-	}
-	return w
-}
-
-func listHeight(m Model) int {
-	h := m.layout.contentH
-	if h < 4 {
-		return 4
-	}
-	return h
 }
 
 func (m Model) View() string {
@@ -214,24 +209,35 @@ func (m Model) View() string {
 	switch m.page {
 	case PageBoard:
 		body = m.viewBoard()
-	case PageProjects:
-		body = m.viewProjects()
 	case PageTasks:
 		body = m.viewTasks()
+	case PageProjects:
+		body = m.viewProjects()
 	case PageImport:
 		body = m.viewImport()
-	case PagePreview:
-		body = m.viewPreview()
 	}
 
 	inner := lipgloss.JoinVertical(lipgloss.Left,
 		m.renderHeader(),
 		"",
-		baseStyle.Width(m.layout.contentW).Render(body),
+		baseStyle.Width(m.layout.contentW).Height(m.layout.contentH).Render(body),
 		"",
 		m.renderFooter(),
 	)
 	return m.placeWindow(inner)
+}
+
+// allTaskRefs returns every task across all projects in document order.
+func (m Model) allTaskRefs() []taskRef {
+	var refs []taskRef
+	for _, p := range m.doc.Projects {
+		for _, g := range p.Groups {
+			for _, t := range g.Tasks {
+				refs = append(refs, taskRef{task: t, project: p})
+			}
+		}
+	}
+	return refs
 }
 
 // Run starts the TUI program.
@@ -243,10 +249,4 @@ func Run(doc *store.Document, path string) error {
 	p := tea.NewProgram(New(doc, path), opts...)
 	_, err := p.Run()
 	return err
-}
-
-// SetPreview switches to preview page (called from import flow via message).
-func (m *Model) SetPreview(md string) {
-	m.previewMD = md
-	m.page = PagePreview
 }

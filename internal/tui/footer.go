@@ -3,78 +3,101 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // FooterCommand is one keyboard hint in the footer.
 type FooterCommand struct {
-	Key    string
-	Label  string
+	Key   string
+	Label string
 }
 
 func (m Model) promoLine() string {
 	open := m.doc.OpenCountTotal()
+	due := m.doc.DueTodayCount()
 	done := m.doc.DoneTodayCount()
-	return fmt.Sprintf("%d open tasks · %d completed today", open, done)
+	return fmt.Sprintf("%d open tasks · %d due today · %d completed today", open, due, done)
 }
 
 func (m Model) footerCommands() []FooterCommand {
-	if m.page == PagePreview {
+	if m.editing {
 		return []FooterCommand{
-			{"y", "merge"},
-			{"n", "cancel"},
-			{"q", "quit"},
+			{"↑/↓", "field"},
+			{"enter", "save"},
+			{"esc", "cancel"},
 		}
 	}
 	if m.adding {
 		return []FooterCommand{
-			{"enter", "save"},
-			{"esc", "cancel"},
+			{"enter", "add"},
+			{"esc", "done"},
 		}
 	}
 	switch m.page {
 	case PageBoard:
 		return []FooterCommand{
-			{"↑/↓", "tasks"},
-			{"enter", "toggle"},
 			{"space", "toggle"},
-			{"a", "add"},
+			{"↑/↓", "navigate"},
+			{"enter", "open"},
 			{"d", "delete"},
-			{"1-4", "pages"},
-			{"q", "quit"},
-		}
-	case PageProjects:
-		return []FooterCommand{
-			{"↑/↓", "projects"},
-			{"enter", "tasks"},
-			{"1-4", "pages"},
-			{"q", "quit"},
+			{"esc", "quit"},
 		}
 	case PageTasks:
-		return []FooterCommand{
-			{"space", "toggle"},
-			{"a", "add"},
-			{"d", "delete"},
-			{"esc", "back"},
-			{"q", "quit"},
-		}
-	case PageImport:
-		if m.generating {
+		if m.mode == modeView {
 			return []FooterCommand{
-				{"…", "generating"},
+				{"space", "toggle"},
+				{"↑/↓", "navigation"},
+				{"e", "edit"},
+				{"s", "save"},
+				{"esc", "back"},
 			}
 		}
 		return []FooterCommand{
-			{"↑/↓", "files"},
-			{"enter", "create tasks"},
-			{"1-4", "pages"},
-			{"q", "quit"},
+			{"space", "toggle"},
+			{"enter", "open"},
+			{"↑/↓", "navigate"},
+			{"a", "add"},
+			{"d", "delete"},
+			{"esc", "quit"},
 		}
-	default:
+	case PageProjects:
+		if m.mode == modeView {
+			return []FooterCommand{
+				{"space", "toggle"},
+				{"↑/↓", "navigate"},
+				{"d", "delete"},
+				{"e", "edit"},
+				{"esc", "back"},
+			}
+		}
 		return []FooterCommand{
-			{"1", "board"},
-			{"q", "quit"},
+			{"↑/↓", "navigate"},
+			{"enter", "open"},
+			{"esc", "quit"},
+		}
+	case PageImport:
+		if m.generating {
+			return []FooterCommand{{"…", "generating"}}
+		}
+		if m.mode == modeView {
+			return []FooterCommand{
+				{"space", "toggle"},
+				{"↑/↓", "navigate"},
+				{"a", "add"},
+				{"d", "delete"},
+				{"s", "save"},
+				{"esc", "back"},
+			}
+		}
+		return []FooterCommand{
+			{"↑/↓", "navigate"},
+			{"enter", "render"},
+			{"d", "delete"},
+			{"esc", "quit"},
 		}
 	}
+	return []FooterCommand{{"esc", "quit"}}
 }
 
 func (m Model) renderFooter() string {
@@ -83,10 +106,9 @@ func (m Model) renderFooter() string {
 	if m.status != "" {
 		promo = statusStyle.Render(m.status)
 	}
-	b.WriteString(baseStyle.Width(m.layout.contentW).Render(promo))
+	b.WriteString(baseStyle.Width(m.layout.contentW).Align(lipgloss.Center).Render(promo))
 	b.WriteString("\n")
-	rule := strings.Repeat("─", m.layout.contentW)
-	b.WriteString(mutedStyle.Render(rule))
+	b.WriteString(m.ruleLine())
 	b.WriteString("\n")
 	var parts []string
 	for _, c := range m.footerCommands() {
@@ -95,6 +117,6 @@ func (m Model) renderFooter() string {
 		)
 	}
 	hints := strings.Join(parts, "  ")
-	b.WriteString(baseStyle.Width(m.layout.contentW).Render(hints))
+	b.WriteString(baseStyle.Width(m.layout.contentW).Align(lipgloss.Center).Render(hints))
 	return b.String()
 }

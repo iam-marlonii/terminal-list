@@ -16,11 +16,13 @@ const (
 
 // Task is a single actionable item.
 type Task struct {
-	ID        string
-	Title     string
-	Status    Status
-	Created   time.Time
-	Completed *time.Time
+	ID          string
+	Title       string
+	Status      Status
+	Created     time.Time
+	Completed   *time.Time
+	Due         *time.Time
+	Description string
 }
 
 // New builds an open task with a fresh ID and creation timestamp.

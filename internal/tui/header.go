@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"fmt"
-
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -14,35 +12,26 @@ type headerTab struct {
 
 func headerTabs() []headerTab {
 	return []headerTab{
-		{"1", "board", PageBoard},
-		{"2", "projects", PageProjects},
-		{"3", "tasks", PageTasks},
-		{"4", "import", PageImport},
+		{"b", "board", PageBoard},
+		{"t", "tasks", PageTasks},
+		{"p", "projects", PageProjects},
+		{"i", "import", PageImport},
 	}
 }
 
 func (m Model) renderHeader() string {
-	div := headerDividerStyle.Render("│")
-	var segments []string
-	segments = append(segments, brandStyle.Render("todo"))
+	segments := []string{brandStyle.Render("kanban")}
 	for _, t := range headerTabs() {
-		active := m.page == t.page || (m.page == PagePreview && t.page == PageImport)
-		key := headerKeyStyle.Render(t.key)
-		label := t.name
-		var seg string
+		active := m.page == t.page
+		label := tabKeyStyle.Render(t.key) + " " + t.name
 		if active {
-			seg = headerSegActiveStyle.Render(key + " " + label)
+			segments = append(segments, tabActiveStyle.Render(label))
 		} else {
-			seg = headerSegStyle.Render(key + " " + label)
+			segments = append(segments, tabStyle.Render(label))
 		}
-		segments = append(segments, seg)
 	}
-	open := m.doc.OpenCountTotal()
-	cart := fmt.Sprintf("%d open", open)
-	segments = append(segments, headerSegStyle.Render(cart))
-	line := lipgloss.JoinHorizontal(lipgloss.Top, segments[0], div)
-	for i := 1; i < len(segments); i++ {
-		line = lipgloss.JoinHorizontal(lipgloss.Top, line, div, segments[i])
-	}
-	return baseStyle.Width(m.layout.containerW - 2).Render(line)
+	bar := lipgloss.JoinHorizontal(lipgloss.Center, segments...)
+	return baseStyle.Width(m.layout.contentW).
+		Align(lipgloss.Center).
+		Render(bar)
 }

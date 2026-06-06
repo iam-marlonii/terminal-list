@@ -17,9 +17,10 @@ import (
 type ProjectStatus string
 
 const (
-	StatusActive ProjectStatus = "active"
-	StatusPaused ProjectStatus = "paused"
-	StatusDone   ProjectStatus = "done"
+	StatusActive     ProjectStatus = "active"
+	StatusInProgress ProjectStatus = "in progress"
+	StatusPaused     ProjectStatus = "paused"
+	StatusDone       ProjectStatus = "done"
 )
 
 // Document is the whole tasks file.
@@ -34,7 +35,9 @@ type Project struct {
 	Status  ProjectStatus
 	Source  string
 	Color   string // optional hex accent for TUI (e.g. color:00ffff in metadata)
+	Area    string
 	Created time.Time
+	Due     *time.Time
 	Groups  []*Group
 }
 
@@ -47,19 +50,19 @@ type Group struct {
 
 // Row is a flattened display line for lists.
 type Row struct {
-	Header string
-	Level  int // 1 = project, 2 = group
-	Task   *task.Task
+	Header  string
+	Level   int // 1 = project, 2 = group
+	Task    *task.Task
 	Project *Project
 }
 
 var (
-	reSection  = regexp.MustCompile(`^##\s+(.*)$`)
-	reGroup    = regexp.MustCompile(`^###\s+(.*)$`)
-	reTask     = regexp.MustCompile(`^\s*[-*]\s+\[([ xX])\]\s+(.*)$`)
-	reFocus    = regexp.MustCompile(`^>\s*(?:[Ff]ocus:\s*)?(.*)$`)
-	reComment  = regexp.MustCompile(`<!--(.*?)-->`)
-	reProject  = regexp.MustCompile(`(?i)^project:\s*(.*)$`)
+	reSection = regexp.MustCompile(`^##\s+(.*)$`)
+	reGroup   = regexp.MustCompile(`^###\s+(.*)$`)
+	reTask    = regexp.MustCompile(`^\s*[-*]\s+\[([ xX])\]\s+(.*)$`)
+	reFocus   = regexp.MustCompile(`^>\s*(?:[Ff]ocus:\s*)?(.*)$`)
+	reComment = regexp.MustCompile(`<!--(.*?)-->`)
+	reProject = regexp.MustCompile(`(?i)^project:\s*(.*)$`)
 )
 
 // Load reads a document from disk. Missing file yields a fresh doc with Inbox.
@@ -179,25 +182,61 @@ func normalizeProjectHeading(raw string) string {
 	return raw
 }
 
-func parseProjectMeta(p *Project, meta string) {
-	for _, kv := range strings.Fields(meta) {
+// metaFields splits a metadata comment into key:value pairs. The canonical
+// format is " | "-delimited so values may contain spaces (e.g. area:My Well).
+// Legacy comments without a "|" fall back to whitespace-delimited fields.
+func metaFields(meta string) [][2]string {
+	var raw []string
+	if strings.Contains(meta, "|") {
+		raw = strings.Split(meta, "|")
+	} else {
+		raw = strings.Fields(meta)
+	}
+	var out [][2]string
+	for _, kv := range raw {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
 		parts := strings.SplitN(kv, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		switch parts[0] {
+		out = append(out, [2]string{strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])})
+	}
+	return out
+}
+
+func parseDate(v string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		if ts, err := time.Parse(layout, v); err == nil {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseProjectMeta(p *Project, meta string) {
+	for _, kv := range metaFields(meta) {
+		key, val := kv[0], kv[1]
+		switch key {
 		case "status":
-			p.Status = ProjectStatus(parts[1])
+			p.Status = ProjectStatus(val)
 		case "source":
-			p.Source = parts[1]
+			p.Source = val
+		case "area":
+			p.Area = val
 		case "created":
-			if ts, err := time.Parse("2006-01-02", parts[1]); err == nil {
-				p.Created = ts
-			} else if ts, err := time.Parse(time.RFC3339, parts[1]); err == nil {
+			if ts, ok := parseDate(val); ok {
 				p.Created = ts
 			}
+		case "due":
+			if ts, ok := parseDate(val); ok {
+				due := ts
+				p.Due = &due
+			}
 		case "color":
-			p.Color = strings.TrimPrefix(parts[1], "#")
+			p.Color = strings.TrimPrefix(val, "#")
 		}
 	}
 }
@@ -211,22 +250,27 @@ func parseTask(line string) *task.Task {
 	if cm := reComment.FindStringSubmatch(rest); cm != nil {
 		meta := strings.TrimSpace(cm[1])
 		rest = strings.TrimSpace(reComment.ReplaceAllString(rest, ""))
-		for _, kv := range strings.Fields(meta) {
-			parts := strings.SplitN(kv, ":", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			switch parts[0] {
+		for _, kv := range metaFields(meta) {
+			key, val := kv[0], kv[1]
+			switch key {
 			case "id":
-				t.ID = parts[1]
+				t.ID = val
 			case "created":
-				if ts, err := time.Parse(time.RFC3339, parts[1]); err == nil {
+				if ts, ok := parseDate(val); ok {
 					t.Created = ts
 				}
 			case "done":
-				if ts, err := time.Parse(time.RFC3339, parts[1]); err == nil {
-					t.Completed = &ts
+				if ts, ok := parseDate(val); ok {
+					done := ts
+					t.Completed = &done
 				}
+			case "due":
+				if ts, ok := parseDate(val); ok {
+					due := ts
+					t.Due = &due
+				}
+			case "desc":
+				t.Description = val
 			}
 		}
 	}
@@ -281,14 +325,23 @@ func (d *Document) Save(path string) error {
 	fmt.Fprintf(&b, "# %s\n\n", d.Title)
 	for _, p := range d.Projects {
 		fmt.Fprintf(&b, "## Project: %s\n", p.Name)
-		meta := fmt.Sprintf("status:%s created:%s", p.Status, p.Created.UTC().Format("2006-01-02"))
+		fields := []string{
+			"status:" + string(p.Status),
+			"created:" + p.Created.UTC().Format("2006-01-02"),
+		}
+		if p.Due != nil {
+			fields = append(fields, "due:"+p.Due.UTC().Format("2006-01-02"))
+		}
+		if p.Area != "" {
+			fields = append(fields, "area:"+p.Area)
+		}
 		if p.Source != "" {
-			meta += " source:" + p.Source
+			fields = append(fields, "source:"+p.Source)
 		}
 		if p.Color != "" {
-			meta += " color:" + p.Color
+			fields = append(fields, "color:"+p.Color)
 		}
-		fmt.Fprintf(&b, "<!-- %s -->\n\n", meta)
+		fmt.Fprintf(&b, "<!-- %s -->\n\n", strings.Join(fields, " | "))
 
 		if len(p.Groups) == 0 {
 			p.Groups = []*Group{{}}
@@ -317,11 +370,20 @@ func renderTask(t *task.Task) string {
 	if t.Done() {
 		box = "x"
 	}
-	meta := fmt.Sprintf("id:%s created:%s", t.ID, t.Created.UTC().Format(time.RFC3339))
-	if t.Completed != nil {
-		meta += " done:" + t.Completed.UTC().Format(time.RFC3339)
+	fields := []string{
+		"id:" + t.ID,
+		"created:" + t.Created.UTC().Format(time.RFC3339),
 	}
-	return fmt.Sprintf("- [%s] %s <!-- %s -->", box, t.Title, meta)
+	if t.Completed != nil {
+		fields = append(fields, "done:"+t.Completed.UTC().Format(time.RFC3339))
+	}
+	if t.Due != nil {
+		fields = append(fields, "due:"+t.Due.UTC().Format("2006-01-02"))
+	}
+	if t.Description != "" {
+		fields = append(fields, "desc:"+t.Description)
+	}
+	return fmt.Sprintf("- [%s] %s <!-- %s -->", box, t.Title, strings.Join(fields, " | "))
 }
 
 // RowsForProject flattens one project for the tasks view.
@@ -446,6 +508,46 @@ func (p *Project) OpenCount() int {
 	return n
 }
 
+// TaskCount returns the total number of tasks in a project.
+func (p *Project) TaskCount() int {
+	n := 0
+	for _, g := range p.Groups {
+		n += len(g.Tasks)
+	}
+	return n
+}
+
+// DoneCount returns the number of completed tasks in a project.
+func (p *Project) DoneCount() int {
+	n := 0
+	for _, g := range p.Groups {
+		for _, t := range g.Tasks {
+			if t.Done() {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// ProgressPercent returns completion as a percentage (0 when empty).
+func (p *Project) ProgressPercent() float64 {
+	total := p.TaskCount()
+	if total == 0 {
+		return 0
+	}
+	return float64(p.DoneCount()) / float64(total) * 100
+}
+
+// Tasks returns all tasks in a project in document order.
+func (p *Project) Tasks() []*task.Task {
+	var out []*task.Task
+	for _, g := range p.Groups {
+		out = append(out, g.Tasks...)
+	}
+	return out
+}
+
 // DoneTodayCount returns tasks completed today in the document.
 func (d *Document) DoneTodayCount() int {
 	now := time.Now().UTC()
@@ -459,6 +561,27 @@ func (d *Document) DoneTodayCount() int {
 					if cy == y && cm == m && cd == day {
 						n++
 					}
+				}
+			}
+		}
+	}
+	return n
+}
+
+// DueTodayCount returns open tasks whose due date is today.
+func (d *Document) DueTodayCount() int {
+	now := time.Now()
+	y, mo, day := now.Date()
+	n := 0
+	for _, p := range d.Projects {
+		for _, g := range p.Groups {
+			for _, t := range g.Tasks {
+				if t.Done() || t.Due == nil {
+					continue
+				}
+				dy, dm, dd := t.Due.Date()
+				if dy == y && dm == mo && dd == day {
+					n++
 				}
 			}
 		}
@@ -521,7 +644,10 @@ func cloneProject(sp *Project) *Project {
 		Name:    sp.Name,
 		Status:  sp.Status,
 		Source:  sp.Source,
+		Color:   sp.Color,
+		Area:    sp.Area,
 		Created: sp.Created,
+		Due:     sp.Due,
 	}
 	for _, g := range sp.Groups {
 		ng := &Group{Label: g.Label, Focus: g.Focus}

@@ -97,7 +97,7 @@ func runImport(docPath string) {
 		fatal(err)
 	}
 
-	fmt.Printf("Staged %s. Open todo, go to page 4 (import) to create tasks.\n", name)
+	fmt.Printf("Staged %s. Open todo, go to the import tab (i) to create tasks.\n", name)
 }
 
 func copyFile(src, dst string) error {
@@ -153,18 +153,22 @@ func runList(file string) {
 }
 
 func printHelp() {
-	fmt.Print(`todo — terminal task board (projects + markdown)
+	fmt.Print(`kanban — terminal task board (projects + markdown)
 
-  todo                         open board TUI (1-4 switch pages)
-  todo import <file>           stage a PDF/md/txt for import (page 4)
+  todo                         open the board TUI (b/t/p/i switch tabs)
+  todo import <file>           stage a PDF/md/txt for import (import tab)
   todo plan <file>             alias for import
   todo add  <task text>        add to Inbox
   todo list                    print all tasks
   todo help                    show this message
 
+Tabs:
+  b board     t tasks     p projects     i import
+
 Importing:
   todo import <file>  copies the file into the imports directory. Open the
-  TUI, go to page 4 (import), select the file, and create tasks from it.
+  TUI, go to the import tab (i), select the file, press enter to render, and
+  review the generated tasks before saving.
 
 Environment:
   TODO_FILE           task file (default: ~/.config/terminal-list/tasks.md)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/iam-marlonjr/terminal-list/internal/config"
 	"github.com/iam-marlonjr/terminal-list/internal/document"
@@ -64,34 +65,88 @@ func listImports() []string {
 }
 
 func (m Model) viewImport() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("import") + "\n\n")
-	b.WriteString(mutedStyle.Render("To import run: todo import <path-to-file>") + "\n\n")
+	if m.mode == modeView {
+		return m.viewImportReview()
+	}
+	return m.viewImportDashboard()
+}
+
+func (m Model) viewImportDashboard() string {
+	header := lipgloss.JoinVertical(lipgloss.Left,
+		m.centerLine(subtitleStyle.Render("import · dashboard")),
+		m.centerLine(mutedStyle.Render("to import run: todo import <path-to-file>")),
+		m.ruleLine(),
+	)
 
 	if m.generating {
 		name := filepath.Base(m.pendingImportFile)
-		b.WriteString(accentStyle.Render(fmt.Sprintf("generating tasks from %s …", name)))
-		return b.String()
+		return lipgloss.JoinVertical(lipgloss.Left, header,
+			accentStyle.Render(fmt.Sprintf("generating tasks from %s …", name)))
 	}
 
+	var rows []string
 	if len(m.importFiles) == 0 {
-		b.WriteString(mutedStyle.Render("no files staged — run: todo import <path>"))
-		return b.String()
+		rows = append(rows, mutedStyle.Render("no files staged — run: todo import <path>"))
+	}
+	for i, f := range m.importFiles {
+		if i == m.importSel {
+			rows = append(rows, selectedItemStyle.Width(m.layout.contentW).Render(f))
+		} else {
+			rows = append(rows, menuItemStyle.Render(f))
+		}
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, header, strings.Join(rows, "\n"))
+}
+
+func (m Model) viewImportReview() string {
+	header := lipgloss.JoinVertical(lipgloss.Left,
+		m.centerLine(subtitleStyle.Render("import · review")),
+		m.centerLine(mutedStyle.Render("please review the import")),
+		m.ruleLine(),
+	)
+	p := m.reviewProject
+	if p == nil {
+		return lipgloss.JoinVertical(lipgloss.Left, header, mutedStyle.Render("nothing to review"))
 	}
 
-	for i, f := range m.importFiles {
-		line := "  " + f
-		if i == m.importSel {
-			line = selectedItemStyle.Render("  " + f)
-		} else {
-			line = menuItemStyle.Render(line)
-		}
-		b.WriteString(line + "\n")
+	meta := []string{
+		titleStyle.Render(strings.ToLower(p.Name)),
+		metaLine("created", fmtDate(p.Created)),
 	}
-	return b.String()
+	if p.Due != nil {
+		meta = append(meta, metaLine("due", fmtDate(*p.Due)))
+	}
+	if p.Area != "" {
+		meta = append(meta, metaLine("area", p.Area))
+	}
+	meta = append(meta, metaLine("related tasks generated", fmt.Sprintf("%d", p.TaskCount())))
+
+	tasks := p.Tasks()
+	var taskLines []string
+	taskLines = append(taskLines, ruleStyle.Render(strings.Repeat("─", m.layout.contentW)))
+	for i, t := range tasks {
+		taskLines = append(taskLines, taskCheckLine(t, !m.adding && i == m.reviewTaskSel, m.layout.contentW))
+	}
+	if m.adding {
+		line := "[ ] " + m.addInput.View()
+		taskLines = append(taskLines, selectedItemStyle.Width(m.layout.contentW).Render(line))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		strings.Join(meta, "\n"),
+		strings.Join(taskLines, "\n"),
+	)
 }
 
 func (m Model) updateImport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modeView {
+		return m.updateImportReview(msg)
+	}
+	return m.updateImportDashboard(msg)
+}
+
+func (m Model) updateImportDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.generating {
 		return m, nil
 	}
@@ -115,8 +170,174 @@ func (m Model) updateImport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingImportFile = path
 		m.status = "generating tasks …"
 		return m, generateCmd(path)
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 && msg.Runes[0] == 'd' {
+			if m.importSel >= 0 && m.importSel < len(m.importFiles) {
+				path := filepath.Join(config.ImportDir(), m.importFiles[m.importSel])
+				if err := moveToTrash(path); err != nil {
+					m.status = "delete error: " + err.Error()
+				} else {
+					m.status = "removed: " + m.importFiles[m.importSel]
+				}
+				m.refreshImports()
+			}
+			return m, nil
+		}
 	}
 	return m, nil
+}
+
+func (m Model) updateImportReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.adding {
+		return m.updateReviewAdd(msg)
+	}
+	p := m.reviewProject
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.reviewDoc = nil
+		m.reviewProject = nil
+		m.pendingImportFile = ""
+		m.mode = modeDashboard
+		m.status = "import cancelled"
+		return m, nil
+	case tea.KeyUp, tea.KeyCtrlP:
+		if p != nil {
+			m.reviewTaskMove(-1, len(p.Tasks()))
+		}
+		return m, nil
+	case tea.KeyDown, tea.KeyCtrlN:
+		if p != nil {
+			m.reviewTaskMove(1, len(p.Tasks()))
+		}
+		return m, nil
+	case tea.KeySpace:
+		if p != nil {
+			if tasks := p.Tasks(); m.reviewTaskSel >= 0 && m.reviewTaskSel < len(tasks) {
+				tasks[m.reviewTaskSel].Toggle()
+			}
+		}
+		return m, nil
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'a':
+				m.adding = true
+				m.addInput.Focus()
+				m.addInput.SetValue("")
+				return m, textinputBlink()
+			case 'd':
+				if p != nil {
+					if tasks := p.Tasks(); m.reviewTaskSel >= 0 && m.reviewTaskSel < len(tasks) {
+						m.reviewDoc.Remove(tasks[m.reviewTaskSel])
+						if m.reviewTaskSel > 0 && m.reviewTaskSel >= len(p.Tasks()) {
+							m.reviewTaskSel--
+						}
+					}
+				}
+				return m, nil
+			case 's':
+				return m.commitReview()
+			}
+		}
+	}
+	return m, nil
+}
+
+// updateReviewAdd handles inline task entry during import review.
+func (m Model) updateReviewAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		title := strings.TrimSpace(m.addInput.Value())
+		if title != "" && m.reviewProject != nil {
+			m.reviewDoc.AddToProject(m.reviewProject, title)
+			m.reviewTaskSel = len(m.reviewProject.Tasks()) - 1
+		}
+		m.adding = false
+		m.addInput.Blur()
+		m.addInput.SetValue("")
+		return m, nil
+	case tea.KeyEsc:
+		m.adding = false
+		m.addInput.Blur()
+		m.addInput.SetValue("")
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.addInput, cmd = m.addInput.Update(msg)
+	return m, cmd
+}
+
+func (m Model) commitReview() (tea.Model, tea.Cmd) {
+	if m.reviewDoc == nil {
+		return m, nil
+	}
+	m.doc.Merge(m.reviewDoc)
+	m.save()
+	if m.pendingImportFile != "" {
+		if err := moveToTrash(m.pendingImportFile); err != nil {
+			m.status = "import merged (trash error: " + err.Error() + ")"
+		} else {
+			m.status = "import merged; file moved to trash"
+		}
+		m.pendingImportFile = ""
+	} else {
+		m.status = "import merged"
+	}
+	m.reviewDoc = nil
+	m.reviewProject = nil
+	m.refreshImports()
+	m.page = PageBoard
+	m.mode = modeDashboard
+	return m, nil
+}
+
+func (m *Model) reviewTaskMove(delta, total int) {
+	if total == 0 {
+		return
+	}
+	m.reviewTaskSel += delta
+	if m.reviewTaskSel < 0 {
+		m.reviewTaskSel = total - 1
+	}
+	if m.reviewTaskSel >= total {
+		m.reviewTaskSel = 0
+	}
+}
+
+// onGenDone parses generated markdown and opens the review screen.
+func (m Model) onGenDone(msg genDoneMsg) (tea.Model, tea.Cmd) {
+	imported, err := store.ParseMarkdown([]byte(msg.md))
+	if err != nil {
+		m.generating = false
+		m.status = "import error: " + err.Error()
+		return m, nil
+	}
+	normalizeImported(imported)
+	m.reviewDoc = imported
+	m.reviewProject = firstReviewProject(imported)
+	m.reviewTaskSel = 0
+	m.pendingImportFile = msg.file
+	m.generating = false
+	m.page = PageImport
+	m.mode = modeView
+	m.status = ""
+	return m, nil
+}
+
+func firstReviewProject(doc *store.Document) *store.Project {
+	var fallback *store.Project
+	for _, p := range doc.Projects {
+		if strings.EqualFold(p.Name, "Inbox") && p.TaskCount() == 0 {
+			continue
+		}
+		if fallback == nil {
+			fallback = p
+		}
+		if p.TaskCount() > 0 {
+			return p
+		}
+	}
+	return fallback
 }
 
 // generateCmd runs document extraction and AI task generation off the UI thread.
@@ -143,69 +364,6 @@ func generateCmd(file string) tea.Cmd {
 	}
 }
 
-func (m Model) viewPreview() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("import preview") + "\n\n")
-	lines := strings.Split(m.previewMD, "\n")
-	max := m.layout.contentH - 4
-	if max < 5 {
-		max = 5
-	}
-	if len(lines) > max {
-		lines = lines[:max]
-		b.WriteString(mutedStyle.Render(fmt.Sprintf("(%d lines shown)\n", max)))
-	}
-	for _, line := range lines {
-		b.WriteString(line + "\n")
-	}
-	return b.String()
-}
-
-func (m Model) updatePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyRunes:
-		if len(msg.Runes) == 1 {
-			switch msg.Runes[0] {
-			case 'y', 'Y':
-				imported, err := store.ParseMarkdown([]byte(m.previewMD))
-				if err != nil {
-					m.status = "preview error: " + err.Error()
-					m.page = PageImport
-					return m, nil
-				}
-				m.doc.Merge(imported)
-				m.save()
-				if m.pendingImportFile != "" {
-					if err := moveToTrash(m.pendingImportFile); err != nil {
-						m.status = "import merged (trash error: " + err.Error() + ")"
-					} else {
-						m.status = "import merged; file moved to trash"
-					}
-					m.pendingImportFile = ""
-				} else {
-					m.status = "import merged"
-				}
-				m.previewMD = ""
-				m.refreshImports()
-				m.page = PageBoard
-				m.refreshBoardEntries()
-				return m, nil
-			case 'n', 'N':
-				m.previewMD = ""
-				m.pendingImportFile = ""
-				m.page = PageImport
-				m.status = "import cancelled"
-				return m, nil
-			}
-		}
-	case tea.KeyCtrlC:
-		m.save()
-		m.quitting = true
-		return m, tea.Quit
-	}
-	return m, nil
-}
-
 // moveToTrash relocates a consumed import file into the app trash directory.
 func moveToTrash(path string) error {
 	dir := config.TrashDir()
@@ -223,7 +381,7 @@ func moveToTrash(path string) error {
 func normalizeImported(doc *store.Document) {
 	for _, p := range doc.Projects {
 		if p.Status == "" {
-			p.Status = store.StatusActive
+			p.Status = store.StatusInProgress
 		}
 		if p.Source == "" {
 			p.Source = "import"
